@@ -3,7 +3,7 @@ name: Check Carryovers
 on:
   schedule:
     - cron: '37 5 * * *'  # JST 14:37
-    - cron: '7 13 * * *'  # JST 22:07
+    - cron: '57 13 * * *'  # JST 22:57
   workflow_dispatch:
 
 permissions:
