@@ -1,31 +1,27 @@
-name: スポーツくじ繰越金チェック
+name: Check Carryovers
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 매일 오전 11시 (한국시간)
+    - cron: '0 2 * * *'  # 매일 오전 11시 JST 실행
   workflow_dispatch:
 
+permissions:
+  issues: write
+
 jobs:
-  check-carryover:
+  carryover-check:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 리포지토리 체크아웃
-        uses: actions/checkout@v3
-
-      - name: Python 설치
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: '3.11'
 
-      - name: 의존성 설치
-        run: pip install beautifulsoup4 requests
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: 최신 HTML 저장 (셀레니움 대신 wget 사용 가능 시 대체)
-        run: curl -o toto_debug.html "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp"
-
-      - name: 이월금 스크립트 실행
+      - name: Run carryover extractor
+        run: python extract_carryovers.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python extract_carryovers.py
