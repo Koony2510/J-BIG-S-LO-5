@@ -1,111 +1,120 @@
-import re
-import os
-import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
+import requests
+import os
+import re
 
-# GitHub 사용자 지정
-github_assignees = ["Koony2510"]
-github_mentions = ["Koony2510"]
+def normalize_date(raw_date: str) -> str:
+    return re.sub(r"\(.*?\)", "", raw_date).strip()
 
-def shorten_amount_jpy(amount: int) -> str:
-    if amount >= 100_000_000:
-        return f"{amount // 100_000_000}億円"
-    elif amount >= 10_000:
-        return f"{amount // 10_000}万円"
+def format_money_for_title(money: str) -> str:
+    money_num = int(money.replace(",", "").replace("円", ""))
+    if money_num >= 10**8:
+        return f"{money_num // 10**8}億円"
+    elif money_num >= 10**6:
+        return f"{money_num // 10**4}万円"
     else:
-        return f"{amount:,}円"
+        return f"{money_num}円"
 
-def format_table_with_alignment(table_data, headers):
-    col_widths = [len(header) for header in headers]
-    for row in table_data:
-        for i, cell in enumerate(row):
-            if i < len(col_widths):
-                col_widths[i] = max(col_widths[i], len(cell))
-            else:
-                col_widths.append(len(cell))
+def extract_carryovers_by_resultdate(html_path: str, today: str):
+    with open(html_path, "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "html.parser")
 
-    def pad(row):
-        return [cell.ljust(col_widths[i]) for i, cell in enumerate(row)]
-
-    header_line = "| " + " | ".join(pad(headers)) + " |"
-    separator_line = "|-" + "-|-".join("-" * w for w in col_widths) + "-|"
-    data_lines = ["| " + " | ".join(pad(row)) + " |" for row in table_data]
-    return "\n".join([header_line, separator_line] + data_lines)
-
-def extract_and_create_issue(filepath, today):
-    section_names = ["BIG", "MEGA BIG", "100円BIG", "BIG1000", "miniBIG"]
-    source_url = "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp"
-    with open(filepath, encoding="utf-8") as f:
-        html = f.read()
-    soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table")
+    today_norm = normalize_date(today)
+    lot_names = ["BIG", "MEGA BIG", "100円BIG", "BIG1000", "mini BIG"]
+    sections = soup.find_all("table", class_="kobetsu-format2")
+    result_tables = soup.find_all("table", class_="format1")
 
     results = []
-    carry_count = 0
-    for table in tables:
-        if "次回への繰越金" in table.get_text() and "1等" in table.get_text():
-            rows = table.find_all("tr")
-            found = False
-            table_data = []
-            full_amount = 0
-            for row in rows:
-                ths = row.find_all("th")
-                tds = row.find_all("td")
-                if ths and "1等" in ths[0].get_text():
-                    if len(tds) >= 3:
-                        carry_td = tds[2]
-                        match = re.search(r"([\d,]+)円", carry_td.get_text())
-                        if match:
-                            full_amount = int(match.group(1).replace(",", ""))
-                            if full_amount > 0 and carry_count < len(section_names):
-                                section_name = section_names[carry_count]
-                                carry_count += 1
-                                found = True
+    lot_idx = 0
 
-                if found and (ths and any("等" in th.get_text() for th in ths)):
-                    th_text = ths[0].get_text(strip=True)
-                    td_texts = [td.get_text(strip=True) for td in tds]
-                    table_data.append([th_text] + td_texts)
-                if found and len(table_data) >= 3:
+    for section in sections:
+        result_date = None
+        for tbl in result_tables:
+            headers = tbl.find_all("th")
+            if any("結果発表日" in h.text for h in headers):
+                date_tds = tbl.find_all("td")
+                if len(date_tds) >= 3:
+                    result_date_raw = date_tds[2].text.strip()
+                    result_date = normalize_date(result_date_raw)
+                    result_tables.remove(tbl)
                     break
 
-            if found and full_amount:
-                headers = ["等級", "当せん金", "当せん口数", "次回への繰越金"]
-                table_markdown = format_table_with_alignment(table_data, headers)
-                short_amount = shorten_amount_jpy(full_amount)
-                results.append((section_name, short_amount, table_markdown))
-        if carry_count >= len(section_names):
-            break
+        if result_date != today_norm:
+            lot_idx += 1
+            continue
 
-    if results:
-        title = " / ".join(f"{name} {amt} 繰越発生" for name, amt, _ in results)
-        body = "\n\n".join(f"### {name}\n{table}" for name, amt, table in results)
-        mention_text = " ".join([f"@{m}" for m in github_mentions])
-        body += f"\n\n---\n{mention_text}\n出典：[スポーツくじ公式サイト]({source_url})"
+        rows = section.find_all("tr")
+        title_row = rows[0].find_all("th")
+        if len(title_row) < 4 or "次回への繰越金" not in title_row[3].text:
+            lot_idx += 1
+            continue
 
-        # GitHub 이슈 자동 생성
-        github_repo = os.getenv("GITHUB_REPOSITORY")
-        github_token = os.getenv("GITHUB_TOKEN")
-        if github_repo and github_token:
-            api_url = f"https://api.github.com/repos/{github_repo}/issues"
-            headers = {
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github+json"
-            }
-            payload = {
-                "title": title,
-                "body": body,
-                "assignees": github_assignees
-            }
-            response = requests.post(api_url, headers=headers, json=payload)
-            if response.status_code == 201:
-                print("📌 GitHub 이슈가 성공적으로 생성되었습니다.")
-            else:
-                print(f"⚠️ GitHub 이슈 생성 실패: {response.status_code} - {response.text}")
-        else:
-            print("⚠️ GITHUB 환경변수(GITHUB_REPOSITORY, GITHUB_TOKEN)가 누락되었습니다.")
-    else:
+        carryover_row = None
+        for row in rows[1:]:
+            cols = row.find_all(["th", "td"])
+            if len(cols) == 4 and "1等" in cols[0].text:
+                carryover_row = cols
+                break
+
+        if not carryover_row:
+            lot_idx += 1
+            continue
+
+        carryover = carryover_row[3].text.strip()
+        if carryover != "0円":
+            summary_md = "| 等級 | 当せん金 | 口数 | 繰越金 |\n|---|---|---|---|\n"
+            for row in rows[1:4]:
+                cols = row.find_all(["th", "td"])
+                if len(cols) == 4:
+                    summary_md += f"| {cols[0].text.strip()} | {cols[1].text.strip()} | {cols[2].text.strip()} | {cols[3].text.strip()} |\n"
+
+            results.append({
+                "name": lot_names[lot_idx],
+                "carryover": carryover,
+                "summary_md": summary_md,
+                "result_date": result_date
+            })
+
+        lot_idx += 1
+
+    if not results:
         print("✅ 해당 날짜에는 이월금이 없습니다.")
+        return
+
+    title = " / ".join([
+        f"{r['name']} {format_money_for_title(r['carryover'])} 繰越発生"
+        for r in results
+    ])
+
+    body = "\n\n".join([f"### {r['name']}（{r['result_date']}）\n{r['summary_md']}" for r in results])
+    body += "\n\n---\n出典：[スポーツくじ公式サイト](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)"
+
+    github_repo = os.getenv("GITHUB_REPOSITORY")
+    github_token = os.getenv("GITHUB_TOKEN")
+    github_assignees = ["Koony2510"]
+    github_mentions = ["Koony2510"]
+
+    if github_repo and github_token:
+        api_url = f"https://api.github.com/repos/{github_repo}/issues"
+        headers = {
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/vnd.github+json"
+        }
+        mention_text = " ".join([f"@{user}" for user in github_mentions])
+        payload = {
+            "title": title,
+            "body": f"{mention_text}\n\n{body}",
+            "assignees": github_assignees
+        }
+        response = requests.post(api_url, headers=headers, json=payload)
+        if response.status_code == 201:
+            print("📌 GitHub 이슈가 성공적으로 생성되었습니다.")
+        else:
+            print(f"⚠️ GitHub 이슈 생성 실패: {response.status_code} - {response.text}")
+    else:
+        print("⚠️ GITHUB_REPOSITORY 또는 GITHUB_TOKEN 환경변수가 설정되어 있지 않습니다.")
 
 if __name__ == "__main__":
-    extract_and_create_issue("toto_debug.html", "2025年08月02日")
+    today_jp = datetime.today().strftime("%Y年%m月%d日")
+    extract_carryovers_by_resultdate("toto_debug.html", today_jp)
