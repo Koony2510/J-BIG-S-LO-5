@@ -3,8 +3,9 @@ import requests
 from datetime import datetime
 import os
 
-# 오늘 날짜를 'YYYY.MM.DD' 형식으로 설정
-target_date = "2025.08.02"
+# 오늘 날짜를 'YYYY.MM.DD' 형식으로 설정 (또는 테스트용으로 고정)
+target_date = datetime.today().strftime("%Y.%m.%d")
+# target_date = "2025.08.02"  # 테스트용 고정 날짜
 
 # GitHub 설정
 github_repo = os.getenv("GITHUB_REPOSITORY")
@@ -12,7 +13,7 @@ github_token = os.getenv("GITHUB_TOKEN")
 github_assignees = ["Koony2510"]
 github_mentions = ["Koony2510"]
 
-# 로또 웹사이트 URL
+# 로또 웹사이트 URL (BIG 시리즈용)
 url = "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp"
 response = requests.get(url)
 soup = BeautifulSoup(response.content, "html.parser")
@@ -23,6 +24,7 @@ for date_table in soup.find_all("table", class_="format1 mb5"):
     if "結果発表日" in date_table.text:
         result_date_td = date_table.find_all("td")[-1]
         result_date_text = result_date_td.get_text(strip=True)
+        # '2025年08月02日(土)' → '2025.08.02'
         formatted_date = result_date_text.replace("年", ".").replace("月", ".").split("日")[0]
         sections.append((formatted_date, date_table))
 
@@ -38,7 +40,7 @@ table_index = 0
 
 for i, (date_str, _) in enumerate(sections):
     if date_str != target_date:
-        continue
+        continue  # 날짜가 일치하지 않으면 스킵
 
     if table_index >= len(all_tables):
         continue
@@ -57,7 +59,7 @@ for i, (date_str, _) in enumerate(sections):
         print(" | ".join(texts))
 
         if not round_name and len(texts) >= 1 and "第" in texts[0] and "回" in texts[0]:
-            round_name = texts[0]  # e.g., 第1556回
+            round_name = texts[0]
 
         if len(texts) >= 4 and "1等" in texts[0]:
             carryover_amount = texts[3]
@@ -79,12 +81,12 @@ for i, (date_str, _) in enumerate(sections):
             "amount": amount,
             "short": short,
             "table": table,
-            "round": round_name
+            "round": round_name or "第????回"
         })
 
     table_index += 1
 
-# 이월금 결과 정리
+# 이월금 결과 정리 및 이슈 생성
 if carryover_results:
     issue_title = " / ".join(
         [f"{item['round']} {item['name']} {item['short']} 移越発生" for item in carryover_results]
@@ -104,9 +106,8 @@ if carryover_results:
                 body_lines.append("| " + " | ".join(texts) + " |")
         body_lines.append("")
 
-    body_lines.append("📎 출처: [スポーツくじ公式サイト](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)")
+    body_lines.append("📎 출처: [スポーツくじ公式サイト (BIG)](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)")
 
-    # GitHub 이슈 생성
     if github_repo and github_token:
         headers = {
             "Authorization": f"Bearer {github_token}",
@@ -119,7 +120,12 @@ if carryover_results:
             "assignees": github_assignees
         }
 
-        response = requests.post(f"https://api.github.com/repos/{github_repo}/issues", headers=headers, json=payload)
+        response = requests.post(
+            f"https://api.github.com/repos/{github_repo}/issues",
+            headers=headers,
+            json=payload
+        )
+
         if response.status_code == 201:
             print("\n✅ GitHub 이슈가 성공적으로 생성되었습니다.")
         else:
