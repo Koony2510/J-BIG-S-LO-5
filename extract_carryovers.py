@@ -87,7 +87,7 @@ for i, (date_str, _) in enumerate(sections):
 # 이월금 결과 정리
 if carryover_results:
     issue_title = " / ".join(
-        [f"{item['name']} {item['short']}移越発生" for item in carryover_results]
+        [f"{item['name']} {item['short']} 移越発生" for item in carryover_results]
     )
 
     body_lines = []
