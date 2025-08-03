@@ -1,0 +1,32 @@
+name: Create Carryover Issue
+
+on:
+  schedule:
+    - cron: '0 3 * * 6'  # 매주 토요일 한국시간 정오 (UTC+9 → UTC 03:00)
+  workflow_dispatch:
+
+jobs:
+  check-carryover:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install beautifulsoup4 requests
+
+      - name: Download HTML
+        run: curl -s "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp" -o toto_debug.html
+
+      - name: Run carryover check
+        run: python extract_carryovers.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
