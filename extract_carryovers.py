@@ -3,7 +3,6 @@ import requests
 from datetime import datetime
 import os
 
-# 테스트용 날짜 설정 target_date = "2025.08.02" (오늘날짜 대신 고정)
 # 오늘 날짜를 'YYYY.MM.DD' 형식으로 설정
 target_date = datetime.today().strftime("%Y.%m.%d")
 
@@ -24,14 +23,12 @@ for date_table in soup.find_all("table", class_="format1 mb5"):
     if "結果発表日" in date_table.text:
         result_date_td = date_table.find_all("td")[-1]
         result_date_text = result_date_td.get_text(strip=True)
-        # '2025年08月02日(土)' → '2025.08.02'
         formatted_date = result_date_text.replace("年", ".").replace("月", ".").split("日")[0]
         sections.append((formatted_date, date_table))
 
 # 모든 kobetsu-format2 추출
 all_tables = soup.find_all("table", class_="kobetsu-format2 mb10")
 
-# 파싱 결과 로그
 print(f"\n📊 총 감지된 결과발표일 섹션 수: {len(sections)}")
 print(f"📊 총 감지된 당첨결과 테이블 수: {len(all_tables)}\n")
 
@@ -41,7 +38,7 @@ table_index = 0
 
 for i, (date_str, _) in enumerate(sections):
     if date_str != target_date:
-        continue  # 날짜가 일치하지 않으면 스킵
+        continue
 
     if table_index >= len(all_tables):
         continue
@@ -52,11 +49,15 @@ for i, (date_str, _) in enumerate(sections):
     print(f"\n🧩 [{lottery_names[i]}] 結果発表日: {date_str}")
     found = False
     carryover_amount = ""
+    round_name = ""
 
     for row in rows:
         cols = row.find_all(["th", "td"])
         texts = [c.get_text(strip=True) for c in cols]
         print(" | ".join(texts))
+
+        if not round_name and len(texts) >= 1 and "第" in texts[0] and "回" in texts[0]:
+            round_name = texts[0]  # e.g., 第1556回
 
         if len(texts) >= 4 and "1等" in texts[0]:
             carryover_amount = texts[3]
@@ -65,14 +66,11 @@ for i, (date_str, _) in enumerate(sections):
 
     if found:
         amount = carryover_amount
-        # 금액 단위 변환
         amount_num = int(amount.replace(",", "").replace("円", ""))
         if amount_num >= 100000000:
             short = f"{amount_num // 100000000}億円"
         elif amount_num >= 10000000:
             short = f"{amount_num // 1000000}万円"
-        elif amount_num >= 1000000:
-            short = f"{amount_num // 10000}万円"
         else:
             short = f"{amount_num // 10000}万円"
 
@@ -80,7 +78,8 @@ for i, (date_str, _) in enumerate(sections):
             "name": lottery_names[i],
             "amount": amount,
             "short": short,
-            "table": table
+            "table": table,
+            "round": round_name
         })
 
     table_index += 1
@@ -88,12 +87,12 @@ for i, (date_str, _) in enumerate(sections):
 # 이월금 결과 정리
 if carryover_results:
     issue_title = " / ".join(
-        [f"{item['name']} {item['short']} 移越発生" for item in carryover_results]
+        [f"{item['round']} {item['name']} {item['short']} 移越発生" for item in carryover_results]
     )
 
     body_lines = []
     for item in carryover_results:
-        body_lines.append(f"### 🎯 {item['name']} (次回への繰越金: {item['amount']})")
+        body_lines.append(f"### 🎯 {item['round']} {item['name']} (次回への繰越金: {item['amount']})")
         rows = item["table"].find_all("tr")
         body_lines.append("| 등수 | 당첨금 | 당첨수 | 次回への繰越金 |")
         body_lines.append("|------|--------|--------|----------------|")
@@ -105,11 +104,10 @@ if carryover_results:
                 body_lines.append("| " + " | ".join(texts) + " |")
         body_lines.append("")
 
-    body_lines.append("📎 출처: [스포츠 복권 공식 사이트](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)")
+    body_lines.append("📎 출처: [スポーツくじ公式サイト](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)")
 
     # GitHub 이슈 생성
     if github_repo and github_token:
-        import requests
         headers = {
             "Authorization": f"Bearer {github_token}",
             "Accept": "application/vnd.github+json"
