@@ -3,8 +3,9 @@ import requests
 from datetime import datetime
 import os
 
-# 테스트용 날짜 설정 (오늘날짜 대신 고정)
-target_date = "2025.08.02"
+# 테스트용 날짜 설정 target_date = "2025.08.02" (오늘날짜 대신 고정)
+# 오늘 날짜를 'YYYY.MM.DD' 형식으로 설정
+target_date = datetime.today().strftime("%Y.%m.%d")
 
 # GitHub 설정
 github_repo = os.getenv("GITHUB_REPOSITORY")
