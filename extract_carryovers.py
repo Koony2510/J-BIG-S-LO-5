@@ -2,9 +2,12 @@ from bs4 import BeautifulSoup
 import requests
 from datetime import datetime
 import os
+import re
 
-# 고정 날짜 (테스트용)
+# 오늘 날짜 기준 설정 (또는 테스트용 고정값 사용 가능)
 target_date = "2025.08.02"
+# target_date = "2025.08.02"
+# target_date = datetime.today().strftime("%Y.%m.%d")
 
 # GitHub 설정
 github_repo = os.getenv("GITHUB_REPOSITORY")
@@ -12,12 +15,12 @@ github_token = os.getenv("GITHUB_TOKEN")
 github_assignees = ["Koony2510"]
 github_mentions = ["Koony2510"]
 
-# 사이트 접속
+# 복권 웹사이트 URL
 url = "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp"
 response = requests.get(url)
 soup = BeautifulSoup(response.content, "html.parser")
 
-# 결과 발표일 테이블 감지
+# 발표일 섹션 탐색
 sections = []
 for date_table in soup.find_all("table", class_="format1 mb5"):
     if "結果発表日" in date_table.text:
@@ -26,7 +29,7 @@ for date_table in soup.find_all("table", class_="format1 mb5"):
         formatted_date = result_date_text.replace("年", ".").replace("月", ".").split("日")[0]
         sections.append((formatted_date, date_table))
 
-# 결과 테이블 수집
+# 결과 테이블 추출
 all_tables = soup.find_all("table", class_="kobetsu-format2 mb10")
 
 print(f"\n📊 총 감지된 결과발표일 섹션 수: {len(sections)}")
@@ -38,30 +41,35 @@ table_index = 0
 
 for i, (date_str, _) in enumerate(sections):
     if date_str != target_date:
-        continue  # 날짜 미일치 시 스킵
+        continue
 
     if table_index >= len(all_tables):
         continue
 
     table = all_tables[table_index]
     rows = table.find_all("tr")
-    print(f"\n🧩 [{lottery_names[i]}] 結果発表日: {date_str}")
 
+    print(f"\n🧩 [{lottery_names[i]}] 結果発表日: {date_str}")
     found = False
     carryover_amount = ""
-    round_number = "第????回"  # 기본값 설정
+    round_number = "不明"
 
+    # 회차 정보 먼저 추출
+    for row in rows:
+        for col in row.find_all(["th", "td"]):
+            text = col.get_text(strip=True)
+            match = re.search(r"第(\d+)回", text)
+            if match:
+                round_number = f"第{match.group(1)}回"
+                break
+        if round_number != "不明":
+            break
+
+    # carryover 추출
     for row in rows:
         cols = row.find_all(["th", "td"])
         texts = [c.get_text(strip=True) for c in cols]
         print(" | ".join(texts))
-
-        # 회차 정보 추출
-        for text in texts:
-            if text.startswith("第") and text.endswith("回"):
-                round_number = text  # 확실한 값으로 덮어쓰기
-
-        # 1등 이월금 감지
         if len(texts) >= 4 and "1等" in texts[0]:
             carryover_amount = texts[3]
             if carryover_amount != "0円":
@@ -70,10 +78,7 @@ for i, (date_str, _) in enumerate(sections):
     if found:
         amount = carryover_amount
         amount_num = int(amount.replace(",", "").replace("円", ""))
-        if amount_num >= 100000000:
-            short = f"{amount_num // 100000000}億円"
-        else:
-            short = f"{amount_num // 10000}万円"
+        short = f"{amount_num // 100000000}億円" if amount_num >= 100000000 else f"{amount_num // 10000}万円"
 
         carryover_results.append({
             "name": lottery_names[i],
@@ -85,35 +90,36 @@ for i, (date_str, _) in enumerate(sections):
 
     table_index += 1
 
-# 이월금 결과 GitHub 이슈 생성
+# 이월금 결과 정리
 if carryover_results:
-    unique_rounds = {item["round"] for item in carryover_results}
-    common_round = unique_rounds.pop() if len(unique_rounds) == 1 else None
+    # 회차가 모두 동일한 경우 하나만 표시
+    all_rounds = {item["round"] for item in carryover_results}
+    prefix_round = next(iter(all_rounds)) if len(all_rounds) == 1 else None
 
-    if common_round:
-        issue_title = f"{common_round} " + " / ".join(
-            [f"{item['name']} {item['short']} 移越発生" for item in carryover_results]
-        )
-    else:
-        issue_title = " / ".join(
-            [f"{item['round']} {item['name']} {item['short']} 移越発生" for item in carryover_results]
-        )
+    # 이슈 제목 구성
+    issue_title = (
+        f"{prefix_round} " if prefix_round else ""
+    ) + " / ".join([
+        (f"{item['name']} {item['short']} 移越発生" if prefix_round else f"{item['round']} {item['name']} {item['short']} 移越発生")
+        for item in carryover_results
+    ])
 
+    # 이슈 본문 내용
     body_lines = []
     for item in carryover_results:
         body_lines.append(f"### 🎯 {item['round']} {item['name']} (次回への繰越金: {item['amount']})")
         rows = item["table"].find_all("tr")
-        body_lines.append("| 等級 | 当せん金 | 当せん口数 | 次回への繰越金 |")
-        body_lines.append("|------|-----------|--------------|----------------|")
+        body_lines.append("| 등수 | 당첨금 | 당첨수 | 次回への繰越金 |")
+        body_lines.append("|------|--------|--------|----------------|")
         for row in rows:
             cols = row.find_all(["th", "td"])
             texts = [c.get_text(strip=True) for c in cols]
             if len(texts) == 4 and "等" in texts[0]:
                 body_lines.append("| " + " | ".join(texts) + " |")
         body_lines.append("")
-
     body_lines.append("📎 출처: [スポーツくじ公式サイト](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)")
 
+    # GitHub 이슈 생성
     if github_repo and github_token:
         headers = {
             "Authorization": f"Bearer {github_token}",
@@ -124,12 +130,12 @@ if carryover_results:
             "body": f"{' '.join([f'@{u}' for u in github_mentions])}\n\n" + "\n".join(body_lines),
             "assignees": github_assignees
         }
-        response = requests.post(f"https://api.github.com/repos/{github_repo}/issues", headers=headers, json=payload)
-        if response.status_code == 201:
+        r = requests.post(f"https://api.github.com/repos/{github_repo}/issues", headers=headers, json=payload)
+        if r.status_code == 201:
             print("\n✅ GitHub 이슈가 성공적으로 생성되었습니다.")
         else:
-            print(f"\n⚠️ GitHub 이슈 생성 실패: {response.status_code} - {response.text}")
+            print(f"\n⚠️ GitHub 이슈 생성 실패: {r.status_code} - {r.text}")
     else:
-        print("\n⚠️ GITHUB_REPOSITORY 또는 GITHUB_TOKEN 환경변수가 설정되지 않았습니다.")
+        print("\n⚠️ 환경변수 GITHUB_REPOSITORY 또는 GITHUB_TOKEN 이 설정되지 않았습니다.")
 else:
     print("\n✅ 해당 날짜에는 이월금이 없습니다.")
