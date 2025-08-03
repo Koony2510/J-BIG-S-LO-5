@@ -1,120 +1,136 @@
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import requests
 import os
-import re
 
-# 결과발표일을 테스트용으로 고정 (운영 시에는 datetime.today().strftime('%Y年%m月%d日') 사용)
-today = "2025年08月02日"
+# 테스트용 날짜 고정 (結果発表日 비교용)
+today = "2025.08.02"
+
+# 종목 이름 순서 (HTML 상 등장 순서 기준)
+lottery_names = ["BIG", "MEGA BIG", "100円BIG", "BIG1000", "mini BIG"]
 
 # GitHub 설정
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_ASSIGNEES = ["Koony2510"]
-GITHUB_MENTIONS = ["Koony2510"]
+github_repo = os.getenv("GITHUB_REPOSITORY")
+github_token = os.getenv("GITHUB_TOKEN")
+github_assignees = ["Koony2510"]
+github_mentions = ["Koony2510"]
 
-# 이월금 금액을 억/만 단위로 축약하는 함수
-def shorten_amount(amount_str):
-    amount = int(amount_str.replace(",", "").replace("円", ""))
-    if amount >= 10_0000_0000:
-        return f"{amount // 100_000_000}億円"
-    elif amount >= 10_0000:
-        return f"{amount // 10_000}万円"
-    else:
-        return f"{amount}円"
-
-# 웹에서 HTML 가져오기
+# HTML 다운로드
 url = "http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp"
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
-res = requests.get(url, headers=headers)
-res.encoding = res.apparent_encoding
-html = res.text
+response = requests.get(url)
+soup = BeautifulSoup(response.text, "html.parser")
 
-# HTML 파싱
-soup = BeautifulSoup(html, "html.parser")
-sections = soup.find_all("div", class_="contents")
+# 결과 저장용
+results = []
 
-carryover_titles = []
-issue_body_parts = []
-source_url = url
+# 5개 섹션 분할: '販売期間' 테이블을 기준으로 자르기
+sections = soup.find_all("table", class_="format1 mb5")
+carryover_sections = []
+for table in sections:
+    if "結果発表日" in table.text:
+        if today in table.text:
+            # 이 테이블 이후에 있는 kobetsu-format2가 이 종목의 당첨금 내역임
+            carryover_sections.append(table)
 
-lottery_names = ["BIG", "MEGA BIG", "100円BIG", "BIG1000", "mini BIG"]
-lottery_index = 0
+# 결과발표일이 맞는 섹션이 없으면 종료
+if not carryover_sections:
+    print("✅ 해당 날짜에는 이월금이 없습니다.")
+    exit(0)
 
-for section in sections:
-    result_date_tag = section.find("table", class_="format1 mb5")
-    if not result_date_tag:
+# 해당 섹션마다 다음에 등장하는 kobetsu-format2 테이블 추출
+all_tables = soup.find_all("table")
+matched_tables = []
+for i, table in enumerate(all_tables):
+    if table in carryover_sections:
+        # 이 이후에 나오는 kobetsu-format2가 당첨금 테이블
+        for j in range(i+1, len(all_tables)):
+            if "次回への繰越金" in all_tables[j].text:
+                matched_tables.append(all_tables[j])
+                break
+
+# 추출된 테이블 기반 결과 파싱
+for i, table in enumerate(matched_tables):
+    rows = table.find_all("tr")
+    if not rows:
         continue
-
-    result_date_text = result_date_tag.get_text()
-    match = re.search(r"結果発表日.*?(\d{4}年\d{2}月\d{2}日)", result_date_text)
-    if not match:
-        continue
-
-    result_date = match.group(1).strip()
-    if result_date != today:
-        continue
-
-    prize_table = section.find("table", class_="kobetsu-format2 mb10")
-    if not prize_table:
-        continue
-
-    rows = prize_table.find_all("tr")[1:]  # 헤더 제외
-    relevant_rows = []
+    header = [th.text.strip() for th in rows[0].find_all("th")]
+    data_rows = []
     carryover_amount = None
-
-    for row in rows:
-        cols = [col.get_text(strip=True) for col in row.find_all(["th", "td"])]
-        if len(cols) != 4:
-            continue
-
-        if cols[0] == "1等":
-            carryover_amount = cols[3]
-            if carryover_amount != "0円":
-                carryover_title = f"{lottery_names[lottery_index]} {shorten_amount(carryover_amount)} 繰越発生"
-                carryover_titles.append(carryover_title)
-
-        if cols[0] in ["1等", "2等", "3等"]:
-            relevant_rows.append(cols)
-
+    for row in rows[1:]:
+        cols = row.find_all(["td", "th"])
+        cols_text = [c.text.strip() for c in cols]
+        if len(cols_text) == 4:
+            if "1等" in cols_text[0]:
+                carryover_amount = cols_text[3]
+            if "1等" in cols_text[0] or "2等" in cols_text[0] or "3等" in cols_text[0]:
+                data_rows.append(cols_text)
     if carryover_amount and carryover_amount != "0円":
-        table_md = "| 等級 | 当せん金 | 口数 | 繰越金 |\n|---|---|---|---|\n"
-        for r in relevant_rows:
-            table_md += f"| {' | '.join(r)} |\n"
+        results.append({
+            "name": lottery_names[i],
+            "carryover": carryover_amount,
+            "rows": data_rows
+        })
 
-        block = f"### {lottery_names[lottery_index]}（{result_date}）\n{table_md}"
-        issue_body_parts.append(block)
+# 이월금이 없으면 종료
+if not results:
+    print("✅ 해당 날짜에는 이월금이 없습니다.")
+    exit(0)
 
-    lottery_index += 1
-    if lottery_index >= len(lottery_names):
-        break
+# Markdown 테이블 생성
+def format_table(rows):
+    header = "| 등수 | 당첨금 | 당첨수 | 이월금 |\n|---|---|---|---|"
+    lines = [header]
+    for r in rows:
+        line = "| " + " | ".join(r) + " |"
+        lines.append(line)
+    return "\n".join(lines)
+
+# 금액 포맷 정리
+def format_amount(amount):
+    num = int(amount.replace("円", "").replace(",", ""))
+    if num >= 100_000_000:
+        return f"{num // 100_000_000}億円"
+    elif num >= 10_000_000:
+        return f"{num // 10_000_000}千万円"
+    elif num >= 1_000_000:
+        return f"{num // 1_000_000}万円"
+    elif num >= 10_000:
+        return f"{num // 10_000}千円"
+    else:
+        return f"{num}円"
+
+# 이슈 제목 만들기
+issue_title_parts = []
+for item in results:
+    formatted = format_amount(item["carryover"])
+    issue_title_parts.append(f'{item["name"]} {formatted}移越発生')
+issue_title = " / ".join(issue_title_parts)
+
+# 이슈 내용 만들기
+issue_body = ""
+for item in results:
+    table_md = format_table(item["rows"])
+    issue_body += f"### {item['name']}（{item['carryover']}）\n{table_md}\n\n"
+
+issue_body += "---\n[출처 링크](http://www.toto-dream.com/dci/I/IPB/IPB02.do?op=initLotResultDetBIG&popupDispDiv=disp)"
 
 # GitHub 이슈 생성
-if carryover_titles:
-    issue_title = " / ".join(carryover_titles)
-    mention_text = " ".join([f"@{user}" for user in GITHUB_MENTIONS])
-    issue_body = f"{mention_text}\n\n" + "\n\n".join(issue_body_parts)
-    issue_body += f"\n\n出典: [{source_url}]({source_url})"
-
-    if GITHUB_REPOSITORY and GITHUB_TOKEN:
-        api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/issues"
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
-        payload = {
-            "title": issue_title,
-            "body": issue_body,
-            "assignees": GITHUB_ASSIGNEES
-        }
-        response = requests.post(api_url, headers=headers, json=payload)
-        if response.status_code == 201:
-            print("✅ GitHub 이슈가 성공적으로 생성되었습니다.")
-        else:
-            print(f"⚠️ GitHub 이슈 생성 실패: {response.status_code} - {response.text}")
+if github_repo and github_token:
+    api_url = f"https://api.github.com/repos/{github_repo}/issues"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json"
+    }
+    mentions = " ".join([f"@{m}" for m in github_mentions])
+    payload = {
+        "title": issue_title,
+        "body": f"{mentions}\n\n{issue_body}",
+        "assignees": github_assignees
+    }
+    response = requests.post(api_url, headers=headers, json=payload)
+    if response.status_code == 201:
+        print("📌 GitHub 이슈가 성공적으로 생성되었습니다.")
     else:
-        print("⚠️ GITHUB_REPOSITORY 또는 GITHUB_TOKEN 환경변수가 설정되지 않았습니다.")
+        print(f"⚠️ GitHub 이슈 생성 실패: {response.status_code} - {response.text}")
 else:
-    print("✅ 해당 날짜에는 이월금이 없습니다.")
+    print("⚠️ GITHUB_REPOSITORY 또는 GITHUB_TOKEN 환경변수가 누락되었습니다.")
