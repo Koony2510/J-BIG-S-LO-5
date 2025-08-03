@@ -5,7 +5,7 @@ import os
 import re
 
 # 오늘 날짜를 'YYYY.MM.DD' 형식으로 설정 (혹은 고정값으로 테스트)
-target_date = "2025.08.02"
+target_date = datetime.today().strftime("%Y.%m.%d")
 # target_date = "2025.08.02"  # 테스트용 고정값
 # target_date = datetime.today().strftime("%Y.%m.%d")
 
