@@ -1,0 +1,52 @@
+name: Keep Repository Active
+
+on:
+  schedule:
+    - cron: "0 10 */30 * *"   # 약 30일마다 실행 (UTC 10:00 ≈ 한국시간 19시쯤)
+  workflow_dispatch:           # 필요할 때 수동 실행도 가능
+
+permissions:
+  contents: write              # GITHUB_TOKEN으로 푸시하기 위해 필요
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: ⚙️ Configure git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: 🔎 Detect default branch (auto-detect main/master)
+        id: defbranch
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||')
+          if [ -z "$DEFAULT_BRANCH" ]; then
+            DEFAULT_BRANCH="${GITHUB_REF_NAME:-main}"
+          fi
+          echo "default-branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: ✏️ Create dummy change
+        run: |
+          echo "Keep alive: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" > .keepalive
+          git add .keepalive
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "chore: keep repo active"
+
+      - name: 📤 Push changes
+        run: |
+          git pull --rebase origin "${{ steps.defbranch.outputs.default-branch }}" || true
+          if [ -n "$(git log origin/${{ steps.defbranch.outputs.default-branch }}..HEAD --oneline)" ]; then
+            git push origin HEAD:${{ steps.defbranch.outputs.default-branch }}
+          else
+            echo "Nothing to push"
+          fi
